@@ -1,10 +1,18 @@
-import { View, div } from "gpui-kit";
+import { View, div, image } from "gpui-kit";
 import { h_flex, v_flex, Input, InputState, TextView, Editor, EditorState } from "gpui-base";
-import { focused, home, props, readTextFile, writeTextFile, theme, settings } from "herdr";
+import { focused, home, props, readTextFile, writeTextFile, theme, settings, exec, appHome } from "herdr";
+
+import { writeFile, mkdir, unlink } from "fs/promises";
 
 export default class MarkdownViewer extends View {
   init(_props, cx) {
     const options = props() || {};
+    this.media = null;
+    this.mediaKey = "";
+    this.mediaGeneration = 0;
+    this.mediaBusy = false;
+    this.mediaError = "";
+    this.requestId = String(Date.now()) + "-" + String(Math.random()).slice(2);
     this.base = focused()?.cwd || home();
     this.machine = options.on ?? null;
     this.file = "";
@@ -138,16 +146,49 @@ export default class MarkdownViewer extends View {
     cx.notify();
   }
 
-  render() {
+  prepareMedia(cx) {
+    if (this.text === null || this.mode === "edit") return;
+    const key = JSON.stringify([this.file, this.text, settings().dark]);
+    if (key === this.mediaKey) return;
+    this.mediaKey = key;
+    this.media = null;
+    this.mediaError = "";
+    const generation = ++this.mediaGeneration;
+    if (this.machine) {
+      this.mediaError = "Image and diagram previews are currently available for local documents only.";
+      this.mediaBusy = false;
+      return;
+    }
+    this.mediaBusy = true;
+    const request = { text: this.text, file: this.file, root: appHome(), dark: settings().dark };
+    cx.spawn(async (cx) => {
+      const requestFile = appHome() + "/data/md-viewer/request-" + this.requestId + "-" + generation + ".json";
+      try {
+        await mkdir(appHome() + "/data/md-viewer", { recursive: true });
+        await writeFile(requestFile, JSON.stringify(request));
+        const result = await exec("node", [appHome() + "/mods/md-viewer/renderer/render.mjs", requestFile]);
+        if (result.code !== 0) throw new Error(result.stderr || "Renderer failed");
+        const blocks = JSON.parse(result.stdout);
+        if (generation === this.mediaGeneration) this.media = blocks;
+      } catch (e) {
+        if (generation === this.mediaGeneration) this.mediaError = "Media preview failed. Run scripts/install.sh to install the renderer. " + String(e?.message || e).slice(0, 250);
+      }
+      try { await unlink(requestFile); } catch {}
+      if (generation === this.mediaGeneration) { this.mediaBusy = false; cx.notify(); }
+    });
+  }
+
+  render(cx) {
+    this.prepareMedia(cx);
     const t = theme();
     const button = (id, label, action) => div().id(id).px(10).py(6).rounded(6)
       .cursor_pointer().bg(t.raised).hover(s => s.bg(t.hover)).on_click(action).child(label);
-    return v_flex().id("markdown-viewer").size_full().min_h(0).bg(t.surface).text_color(t.foreground)
+    return v_flex().id("markdown-viewer").size_full().min_h(0).on_size_change((size, cx) => { this.width = size.width; cx.notify(); }).bg(t.surface).text_color(t.foreground)
       .on_drop((event, cx) => { if (event.paths?.length) this.open(event.paths[0], cx); })
       .child(h_flex().p(10).gap(8).items_center().border_b(1).border_color(t.border).text_size(12)
         .child(Input.new(this.input).flex_1().min_w(0).h(32).px(8).rounded(6).bg(t.background))
         .child(button("open", "Open", (_e, cx) => this.open(this.input.value(), cx)))
-        .child(button("reload", "Refresh", (_e, cx) => this.reload(cx))))
+        .child(button("reload", "Refresh", (_e, cx) => { this.mediaKey = ""; this.reload(cx); cx.notify(); })))
       .when(this.text !== null, el => el.child(h_flex().px(10).py(6).gap(8).items_center().text_size(12)
         .child(button("mode", this.mode === "edit" ? "Preview" : this.machine ? "Read only · remote" : "Edit", (_e, cx) => {
           if (this.mode === "edit") { this.mode = "preview"; cx.notify(); } else this.edit(cx);
@@ -161,7 +202,18 @@ export default class MarkdownViewer extends View {
         ? Editor.new(this.editor).flex_1().min_h(0)
         : div().id("document").flex_1().min_h(0).overflow_y_scrollbar().p(20)
           .child(this.text !== null
-            ? TextView.markdown("markdown-" + this.file, this.text).selectable(true).scrollable(false)
+            ? v_flex().gap(12).w_full()
+              .when(this.mediaBusy, el => el.child(div().text_color(t.muted).child("Rendering images and diagrams…")))
+              .when(Boolean(this.mediaError), el => el.child(div().text_color(t.blocked).child(this.mediaError)))
+              .children((this.media || [{ type: "markdown", text: this.text }]).map((block, index) => {
+                if (block.type === "image") {
+                  const width = Math.min(block.width / (block.pixelRatio || 1), Math.max(100, (this.width || 560) - 40));
+                  return v_flex().gap(4).child(image(block.path).w(width).h(width * block.height / block.width))
+                    .when(Boolean(block.alt), el => el.child(div().text_size(12).text_color(t.muted).child(block.alt)));
+                }
+                if (block.type === "error") return div().text_color(t.blocked).child(block.text);
+                return TextView.markdown("markdown-" + this.file + "-" + index, block.text).selectable(true).scrollable(false);
+              }))
             : div().text_color(t.muted).child(this.loading ? "Loading Markdown…" : "Open a Markdown file above or drop one into this pane.")));
   }
 }

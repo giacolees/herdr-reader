@@ -1,6 +1,6 @@
 # Herdr Markdown Viewer
 
-A native Markdown reader and editor pane for [Herdr](https://herdr.dev). Renders `.md` and `.markdown` files directly with Herdr's built-in `TextView`, with selectable text, scrolling, theme colors, automatic refresh every three seconds, and local file editing with explicit saves. No build step or dependencies.
+A native Markdown reader and editor pane for [Herdr](https://herdr.dev). Renders `.md` and `.markdown` files directly with Herdr's built-in `TextView`, with selectable text, scrolling, theme colors, automatic refresh every three seconds, and local file editing with explicit saves. Images and Mermaid diagrams are rendered by a local Node.js helper.
 
 ![Markdown reader preview](preview.png)
 
@@ -8,7 +8,7 @@ Available to the Herdr community through the `herdr-mod` topic. [RECIPE.md](RECI
 
 ## Install
 
-With Herdr installed:
+With Herdr, Node.js 22+ and npm installed:
 
 ```sh
 ./scripts/install.sh
@@ -58,4 +58,12 @@ herdr-app check ~/.config/herdr-app/mods/md-files
 node --test tests/viewer.test.mjs
 ```
 
-Herdr must provide the `gpui-kit`, `gpui-base`, and `herdr` runtime modules. This is a native mod, not a browser or Node application. The Markdown features and link/image behavior are provided by Herdr's renderer.
+Herdr must provide the `gpui-kit`, `gpui-base`, and `herdr` runtime modules. This is a native mod, not a browser or Node application. Text and links use Herdr’s native Markdown renderer.
+
+## Images and Mermaid
+
+The installer installs a local rendering helper and Chromium through Mermaid CLI. PNG, JPEG, SVG and other Sharp-supported images are converted to native previews. Relative paths resolve against the Markdown file’s folder; HTTP(S), file URLs, data URLs and reference-style Markdown images are supported. Images appear as separate blocks, including images embedded in a paragraph or list; HTML `<img>` tags are not handled by this helper.
+
+Fenced `mermaid` blocks render locally as images at 2× resolution with transparent backgrounds and the current light/dark appearance. Failed images and diagrams show an error; invalid diagrams retain their source. Ordinary code blocks remain code. Rendered diagrams are images, so their labels are not selectable. Media previews currently support local documents only. Assets are cached under Herdr’s `data/md-viewer/media`; generated cache files unused for 24 hours are removed automatically after rendering a document. Reusing a diagram renews its retention period. Cleanup runs when a document renders, rather than while the reader is idle. You can also remove that folder to clear the cache. Refreshing a clean document picks up Markdown changes; press Refresh to reload image-only changes.
+
+Open `examples/media-test.md` to check local images, remote images, flowcharts and sequence diagrams. Renderer tests require `npm ci --prefix renderer`, followed by `node --test tests/renderer.test.mjs`.
