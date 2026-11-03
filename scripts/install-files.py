@@ -17,7 +17,9 @@ dest = config / "mods/md-files"
 if not dest.exists():
     herdr("do", "mod.clone", json.dumps({"name": "files", "as": "md-files"}))
 # Keep the clone's assets and metadata; replace only our companion's code.
-shutil.copyfile(root / "files-pane/main.js", dest / "main.js")
+for source in (root / "mods/md-files").iterdir():
+    if source.is_file():
+        shutil.copyfile(source, dest / source.name)
 print(herdr("check", str(dest)).strip())
 name = json.loads(herdr("status"))["layout"]
 if name in ("main", "terminals", "win98"):

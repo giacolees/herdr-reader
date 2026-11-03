@@ -2,6 +2,10 @@
 
 A native Markdown reader and editor pane for [Herdr](https://herdr.dev). Renders `.md` and `.markdown` files directly with Herdr's built-in `TextView`, with selectable text, scrolling, theme colors, automatic refresh every three seconds, and local file editing with explicit saves. No build step or dependencies.
 
+![Markdown reader preview](preview.png)
+
+Available to the Herdr community through the `herdr-mod` topic. [RECIPE.md](RECIPE.md) describes how to build and install it from an empty folder.
+
 ## Install
 
 With Herdr installed:
@@ -49,7 +53,7 @@ Automatic refresh pauses while editing or when unsaved changes exist. Opening an
 ## Validate
 
 ```sh
-herdr-app check .
+herdr-app check mods/md-viewer
 herdr-app check ~/.config/herdr-app/mods/md-files
 node --test tests/viewer.test.mjs
 ```

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const source = readFileSync(new URL('../main.js', import.meta.url), 'utf8')
+const source = readFileSync(new URL('../mods/md-viewer/main.js', import.meta.url), 'utf8')
   .replace(/^import .*;\n/gm, '').replace('export default class', 'return class');
 
 function setup(options = { file: '/tmp/test.md' }, storage = new Map()) {
