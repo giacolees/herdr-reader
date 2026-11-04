@@ -231,3 +231,47 @@ test('rename menu renames files and folders, preserves contents and refuses coll
     set('../escape'); view.renameEntry(cx); assert.match(view.renameError, /without folder separators/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('internal dragging moves a file into a folder and never overwrites a collision', async () => {
+  const { mkdtemp, mkdir, writeFile, readFile, access, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const root = await mkdtemp(tmpdir() + '/reader-move-');
+  try {
+    await mkdir(root + '/target'); await writeFile(root + '/photo.png', Buffer.from([0, 255, 10]));
+    const { view, cx, settle } = await creationSetup(root);
+    view.startFileDrag('photo.png', { x: 10, y: 10 }, cx);
+    view.trackFileDrag({ position: { x: 30, y: 40 } }, cx);
+    assert.equal(view.dragActive, true);
+    view.targetFileDrag('target', { x: 0, y: 30, width: 300, height: 28 }, cx);
+    view.finishFileDrag(cx); await settle();
+    await assert.rejects(access(root + '/photo.png'));
+    assert.deepEqual(await readFile(root + '/target/photo.png'), Buffer.from([0, 255, 10]));
+    assert.equal(view.dragFile, null); assert.equal(view.moveBusy, false);
+    await writeFile(root + '/photo.png', 'second');
+    view.moveFile('photo.png', 'target', view.context, cx); await settle();
+    assert.match(view.moveError, /already exists/);
+    assert.equal(await readFile(root + '/photo.png', 'utf8'), 'second');
+    assert.deepEqual(await readFile(root + '/target/photo.png'), Buffer.from([0, 255, 10]));
+    view.moveFile('target/photo.png', '', view.context, cx); await settle();
+    assert.match(view.moveError, /already exists/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('clicks and cancelled or untargeted internal drags do not move files', async () => {
+  const { view, cx, settle } = await creationSetup('/tmp');
+  let moved = 0; view.moveFile = () => { moved++; };
+  view.startFileDrag('note.md', { x: 0, y: 0 }, cx);
+  view.targetFileDrag('docs', { x: 0, y: 0, width: 100, height: 30 }, cx);
+  view.finishFileDrag(cx); assert.equal(moved, 0);
+  view.startFileDrag('note.md', { x: 0, y: 0 }, cx);
+  view.trackFileDrag({ position: { x: 20, y: 0 } }, cx);
+  view.targetFileDrag('docs', { x: 0, y: 0, width: 100, height: 30 }, cx);
+  view.trackFileDrag({ position: { x: 120, y: 40 } }, cx);
+  assert.equal(view.dragTarget, null);
+  view.finishFileDrag(cx); assert.equal(moved, 0);
+  view.startFileDrag('note.md', { x: 0, y: 0 }, cx);
+  view.trackFileDrag({ position: { x: 20, y: 0 } }, cx);
+  view.targetFileDrag('docs', { x: 0, y: 0, width: 100, height: 30 }, cx);
+  view.cancelFileDrag(cx); view.finishFileDrag(cx); await settle();
+  assert.equal(moved, 0);
+});

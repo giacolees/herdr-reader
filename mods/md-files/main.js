@@ -75,6 +75,7 @@ export default class Files extends View {
       const saved = this.saved.get(next);
       this.creating = null; this.createError = ""; this.createBusy = false;
       this.renameTarget = null; this.renameBusy = false; this.renameError = "";
+      this.dragFile = null; this.dragTarget = null; this.dragActive = false; this.moveBusy = false; this.moveError = ""; this.moveMessage = "";
       this.importBusy = false; this.importMessage = ""; this.importError = "";
       this.menu = null; this.deleteTarget = null; this.deleteError = ""; this.deleteBusy = false;
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
@@ -241,6 +242,78 @@ export default class Files extends View {
     cx.notify();
   }
 
+  startFileDrag(path, position, cx) {
+    if (this.moveBusy || this.renameBusy || this.deleteBusy || this.importBusy) return;
+    this.dragFile = { path, position, context: this.context };
+    this.dragTarget = null; this.dragActive = false; this.suppressClick = false;
+  }
+
+  trackFileDrag(event, cx) {
+    if (!this.dragFile) return;
+    const start = this.dragFile.position;
+    if (!this.dragActive && Math.hypot(event.position.x - start.x, event.position.y - start.y) >= 6) {
+      this.dragActive = true; this.suppressClick = true; cx.notify();
+    }
+    const bounds = this.dragTarget?.bounds;
+    if (bounds && (event.position.x < bounds.x || event.position.y < bounds.y || event.position.x >= bounds.x + bounds.width || event.position.y >= bounds.y + bounds.height)) {
+      this.dragTarget = null; cx.notify();
+    }
+  }
+
+  targetFileDrag(path, bounds, cx) {
+    if (!this.dragFile || this.dragTarget?.path === path) return;
+    this.dragTarget = { path, bounds };
+    cx.notify();
+  }
+
+  cancelFileDrag(cx) {
+    if (!this.dragFile) return;
+    this.dragFile = null; this.dragTarget = null; this.dragActive = false;
+    cx.notify();
+  }
+
+  finishFileDrag(cx) {
+    const source = this.dragFile, target = this.dragTarget;
+    const active = this.dragActive;
+    this.cancelFileDrag(cx);
+    if (active && source && target) this.moveFile(source.path, target.path, source.context, cx);
+  }
+
+  async moveOnDisk(from, to, context) {
+    let result;
+    if (!context.on && window()?.platform === "windows") {
+      const quote = value => "'" + value.replaceAll("'", "''") + "'";
+      const command = "$ErrorActionPreference='Stop'; if (Test-Path -LiteralPath " + quote(to) + ") { throw 'An item with this name already exists' }; Move-Item -LiteralPath " + quote(from) + " -Destination " + quote(to) + " -ErrorAction Stop";
+      result = await exec("powershell", ["-NoProfile", "-Command", command]);
+    } else {
+      const script = 'if [ -e "$2" ] || [ -L "$2" ]; then printf "%s\n" "An item with this name already exists" >&2; exit 1; fi; mv -n -- "$1" "$2" || exit; if [ -e "$1" ] || [ -L "$1" ]; then printf "%s\n" "Move failed; the destination may already exist" >&2; exit 1; fi';
+      result = await exec("sh", ["-c", script, "files-move", from, to], { on: context.on });
+    }
+    if (result.code !== 0) throw new Error(result.stderr || "Could not move this item. Check permissions.");
+  }
+
+  moveFile(path, folder, context, cx) {
+    if (this.moveBusy || !this.current(context)) return;
+    const name = path.split("/").pop(), next = folder ? folder + "/" + name : name;
+    if (path === next) return;
+    this.moveBusy = true; this.moveError = ""; this.moveMessage = "";
+    cx.spawn(async cx => {
+      try {
+        await this.moveOnDisk(`${context.cwd}/${path}`, `${context.cwd}/${next}`, context);
+        if (!this.current(context)) return;
+        this.moveMessage = `Moved ${name} to ${folder || "root"}.`;
+        if (folder) this.folders.add(folder);
+        for (const expanded of ["", ...this.folders]) await this.loadFolder(expanded, context);
+      } catch (error) {
+        if (this.current(context)) this.moveError = String(error.message || error).slice(0, 300);
+      } finally {
+        if (this.context === context) this.moveBusy = false;
+        cx.notify();
+      }
+    });
+    cx.notify();
+  }
+
   requestRename(cx) {
     if (!this.menu || this.renameBusy) return;
     this.renameTarget = { ...this.menu, context: this.context };
@@ -264,15 +337,7 @@ export default class Files extends View {
     cx.spawn(async cx => {
       try {
         const from = `${context.cwd}/${path}`, to = `${context.cwd}/${next}`;
-        let result;
-        if (!context.on && window()?.platform === "windows") {
-          const quote = value => "'" + value.replaceAll("'", "''") + "'";
-          result = await exec("powershell", ["-NoProfile", "-Command", "$ErrorActionPreference='Stop'; Rename-Item -LiteralPath " + quote(from) + " -NewName " + quote(name) + " -ErrorAction Stop"]);
-        } else {
-          const script = 'if [ -e "$2" ] || [ -L "$2" ]; then printf "%s\n" "An item with this name already exists" >&2; exit 1; fi; mv -n -- "$1" "$2" || exit; if [ -e "$1" ] || [ -L "$1" ]; then printf "%s\n" "Rename failed; the destination may already exist" >&2; exit 1; fi';
-          result = await exec("sh", ["-c", script, "files-rename", from, to], { on: context.on });
-        }
-        if (result.code !== 0) throw new Error(result.stderr || "Could not rename this item. Check permissions.");
+        await this.moveOnDisk(from, to, context);
         if (!this.current(context)) return;
         const remap = value => value === path ? next : value?.startsWith(path + "/") ? next + value.slice(path.length) : value;
         this.folders = new Set([...this.folders].map(remap));
@@ -362,12 +427,14 @@ export default class Files extends View {
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
-      out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().bg(entry.dir && this.selectedFolder === path ? t.selected : t.background).hover(s => s.bg(entry.dir ? t.selected : t.hover))
+      out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().bg(entry.dir && (this.selectedFolder === path || (this.dragActive && this.dragTarget?.path === path)) ? t.selected : t.background).hover(s => s.bg(entry.dir ? t.selected : t.hover))
+        .on_mouse_down("left", (event, cx) => { this.suppressClick = false; if (!entry.dir) this.startFileDrag(path, event.position, cx); })
+        .when(entry.dir, el => el.on_mouse_move((event, cx) => this.targetFileDrag(path, event.bounds, cx)))
         .when(entry.dir, el => el.on_drop((event, cx) => {
           cx.stop_propagation();
           this.importFiles(event.paths, cx, path);
         }))
-        .on_click((_e, cx) => { this.menu = null; entry.dir ? this.toggle(path, cx) : this.show(path, cx); })
+        .on_click((_e, cx) => { if (this.suppressClick) return; this.menu = null; entry.dir ? this.toggle(path, cx) : this.show(path, cx); })
         .on_mouse_down("right", (_e, cx) => { if (!this.deleteBusy) { this.menu = { path, dir: entry.dir }; cx.notify(); } })
         .child(entry.dir ? svg(`mods/md-files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(svg(`mods/md-files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
@@ -384,8 +451,12 @@ export default class Files extends View {
     const action = (id, label, handler) => div().id(id).px(7).py(5).rounded(5).cursor_pointer()
       .bg(t.raised).hover(s => s.bg(t.hover)).text_size(11).on_click(handler).child(label);
     return v_flex().id("files").relative().size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(this.dropHovered ? t.accent : t.border).text_color(t.foreground).text_size(13)
-      .on_hover((hovered, cx) => { if (this.dropHovered !== hovered) { this.dropHovered = hovered; cx.notify(); } })
+      .on_hover((hovered, cx) => { if (!hovered) this.cancelFileDrag(cx); if (this.dropHovered !== hovered) { this.dropHovered = hovered; cx.notify(); } })
       .on_drop((event, cx) => this.importFiles(event.paths, cx))
+      .on_mouse_move((event, cx) => this.trackFileDrag(event, cx))
+      .on_mouse_up("left", (_event, cx) => this.finishFileDrag(cx))
+      .on_mouse_down_out((_event, cx) => this.cancelFileDrag(cx))
+      .when(this.dragActive, el => el.cursor_grabbing())
       .on_size_change((size, _cx) => { this.panelHeight = size.height; this.panelWidth = size.width; })
       .on_mouse_down("right", (event, cx) => { if (this.menu) { this.menuX = Math.max(4, Math.min((event.local_position?.x ?? 10) + 4, (this.panelWidth || 368) - 184)); this.menuY = Math.max(4, Math.min((event.local_position?.y ?? 42) + 4, (this.panelHeight || 600) - 112)); cx.notify(); } })
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
@@ -395,6 +466,7 @@ export default class Files extends View {
           .child(action("new-file", svg("mods/md-files/file-plus.svg").size(16).text_color(t.muted), (_e, cx) => this.beginCreate("file", cx)))
           .child(action("new-folder", svg("mods/md-files/folder-plus.svg").size(16).text_color(t.muted), (_e, cx) => this.beginCreate("folder", cx))))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
+      .when(Boolean(this.moveBusy || this.moveError || this.moveMessage), el => el.child(div().px(12).py(8).text_size(12).text_color(this.moveError ? t.blocked : t.muted).child(this.moveBusy ? "Moving file…" : this.moveError || this.moveMessage)))
       .when(Boolean(this.importBusy || this.importMessage || this.importError), el => el.child(v_flex().px(12).py(8).gap(4)
         .when(this.importBusy, el => el.child(div().text_size(12).text_color(t.muted).child("Copying dropped files…")))
         .when(Boolean(this.importMessage), el => el.child(div().text_size(12).text_color(t.muted).child(this.importMessage)))
@@ -425,14 +497,14 @@ export default class Files extends View {
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
       .when(Boolean(this.file), el => el.child(this.reader ? div().flex_1().min_h(0).child(this.reader) : this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")))
-      .child(h_flex().id("files-drop-hint").flex_none().px(12).py(10).gap(8).items_center()
+      .child(h_flex().id("files-drop-hint").on_mouse_move((event, cx) => this.targetFileDrag("", event.bounds, cx)).flex_none().px(12).py(10).gap(8).items_center()
         .border_t(1).border_color(this.dropHovered ? t.accent : t.border)
         .bg(this.dropHovered ? t.selected : t.surface)
         .child(svg("mods/md-files/import.svg").size(18).flex_none().text_color(this.dropHovered ? t.accent : t.muted))
         .child(v_flex().gap(3).flex_1().min_w(0)
           .child(div().text_size(12).text_color(this.dropHovered ? t.accent : t.muted)
-            .child(this.importBusy ? "Copying files…" : this.on ? "Drop imports need a local folder" : "Drop files to copy here"))
-          .child(div().text_size(11).truncate().text_color(t.dim).child(this.copyDestination() || "Open a folder first")))
+            .child(this.dragActive ? (this.dragTarget ? "Release to move into this folder" : "Drag onto a folder to move") : this.importBusy ? "Copying files…" : this.on ? "Drop imports need a local folder" : "Drop files to copy here"))
+          .child(div().text_size(11).truncate().text_color(t.dim).child((this.dragActive && this.dragTarget ? (this.dragTarget.path ? this.root + "/" + this.dragTarget.path : this.root) : this.copyDestination()) || "Open a folder first")))
         .when(Boolean(this.selectedFolder), el => el.child(action("copy-to-root", "Use root", (_e, cx) => { this.selectedFolder = ""; cx.notify(); }))))
       .when(!this.file && Boolean(this.menu), el => el.child(v_flex().id("file-context-menu").absolute().left(this.menuX ?? 10).top(this.menuY ?? 42).w(Math.min(180, Math.max(1, (this.panelWidth || 368) - 8))).p(5).gap(3).rounded(6).bg(t.popover).border_1().border_color(t.border)
         .on_mouse_down_out((_e, cx) => { this.menu = null; cx.notify(); })
