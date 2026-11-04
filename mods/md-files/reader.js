@@ -4,9 +4,10 @@ import { focused, home, props, readTextFile, writeTextFile, theme, settings, exe
 
 import { writeFile, mkdir, unlink } from "fs/promises";
 
-export default class MarkdownViewer extends View {
+export default class Reader extends View {
   init(_props, cx) {
-    const options = props() || {};
+    const options = _props?.embedded ? _props : (props() || _props || {});
+    this.embedded = Boolean(options.embedded);
     this.media = null;
     this.mediaKey = "";
     this.mediaGeneration = 0;
@@ -23,11 +24,11 @@ export default class MarkdownViewer extends View {
     this.loading = false;
     this.saving = false;
     this.generation = 0;
-    this.input = InputState.new({ placeholder: "Markdown file path…", value: options.file || "" });
+    this.input = InputState.new({ placeholder: "Markdown or image file path…", value: options.file || "" });
     this.input.on("submit", (_event, cx) => this.open(this.input.value(), cx));
     if (options.file) this.open(options.file, cx);
     cx.timer.every(3000, (cx) => {
-      if (this.mode === "preview" && !this.dirty()) this.reload(cx);
+      if (!this.isImage && this.mode === "preview" && !this.dirty()) this.reload(cx);
     });
   }
 
@@ -45,8 +46,9 @@ export default class MarkdownViewer extends View {
       return;
     }
     path = String(path || "").trim();
-    if (!/\.(md|markdown)$/i.test(path)) {
-      this.error = "Choose a .md or .markdown file.";
+    const isImage = /\.(png|jpe?g|gif|webp|svg|avif|tiff?)$/i.test(path);
+    if (!isImage && !/\.(md|markdown)$/i.test(path)) {
+      this.error = "Choose Markdown or an image (PNG, JPEG, GIF, WebP, SVG, AVIF or TIFF).";
       cx.notify();
       return;
     }
@@ -55,6 +57,10 @@ export default class MarkdownViewer extends View {
     this.editor?.release();
     this.editor = null;
     this.file = path;
+    this.isImage = isImage;
+    this.mediaKey = "";
+    this.media = null;
+    this.mediaGeneration++;
     this.input.set_value(path);
     this.generation++;
     this.text = this.saved = null;
@@ -66,6 +72,12 @@ export default class MarkdownViewer extends View {
 
   reload(cx, restore = false) {
     if (!this.file || this.loading || this.saving) return;
+    if (this.isImage) {
+      this.text = this.saved = "";
+      this.error = "";
+      cx.notify();
+      return;
+    }
     if (this.dirty()) {
       this.error = "Save or discard your changes before refreshing.";
       cx.notify();
@@ -102,7 +114,7 @@ export default class MarkdownViewer extends View {
   }
 
   edit(cx) {
-    if (this.machine || this.text === null) return;
+    if (this.machine || this.isImage || this.text === null) return;
     if (!this.editor) {
       this.editor = EditorState.new({ language: "markdown", value: this.text,
         readonly: false, soft_wrap: true, font_family: settings().font_family });
@@ -160,13 +172,13 @@ export default class MarkdownViewer extends View {
       return;
     }
     this.mediaBusy = true;
-    const request = { text: this.text, file: this.file, root: appHome(), dark: settings().dark };
+    const request = { text: this.text, file: this.file, root: appHome(), dark: settings().dark, imageFile: Boolean(this.isImage) };
     cx.spawn(async (cx) => {
       const requestFile = appHome() + "/data/md-viewer/request-" + this.requestId + "-" + generation + ".json";
       try {
         await mkdir(appHome() + "/data/md-viewer", { recursive: true });
         await writeFile(requestFile, JSON.stringify(request));
-        const result = await exec("node", [appHome() + "/mods/md-viewer/renderer/render.mjs", requestFile]);
+        const result = await exec("node", [appHome() + "/mods/reader/renderer/render.mjs", requestFile]);
         if (result.code !== 0) throw new Error(result.stderr || "Renderer failed");
         const blocks = JSON.parse(result.stdout);
         if (generation === this.mediaGeneration) this.media = blocks;
@@ -181,39 +193,62 @@ export default class MarkdownViewer extends View {
   render(cx) {
     this.prepareMedia(cx);
     const t = theme();
-    const button = (id, label, action) => div().id(id).px(10).py(6).rounded(6)
-      .cursor_pointer().bg(t.raised).hover(s => s.bg(t.hover)).on_click(action).child(label);
-    return v_flex().id("markdown-viewer").size_full().min_h(0).on_size_change((size, cx) => { this.width = size.width; cx.notify(); }).bg(t.surface).text_color(t.foreground)
-      .on_drop((event, cx) => { if (event.paths?.length) this.open(event.paths[0], cx); })
-      .child(h_flex().p(10).gap(8).items_center().border_b(1).border_color(t.border).text_size(12)
-        .child(Input.new(this.input).flex_1().min_w(0).h(32).px(8).rounded(6).bg(t.background))
-        .child(button("open", "Open", (_e, cx) => this.open(this.input.value(), cx)))
-        .child(button("reload", "Refresh", (_e, cx) => { this.mediaKey = ""; this.reload(cx); cx.notify(); })))
-      .when(this.text !== null, el => el.child(h_flex().px(10).py(6).gap(8).items_center().text_size(12)
-        .child(button("mode", this.mode === "edit" ? "Preview" : this.machine ? "Read only · remote" : "Edit", (_e, cx) => {
-          if (this.mode === "edit") { this.mode = "preview"; cx.notify(); } else this.edit(cx);
-        }))
+    const button = (id, label, action, active = false) => div().id(id).px(10).py(6).rounded(6)
+      .cursor_pointer().bg(active ? t.accent : t.raised).text_color(active ? t.accent_foreground : t.foreground)
+      .hover(s => s.bg(active ? t.accent : t.hover)).on_click(action).child(label);
+    const filename = this.file.split(/[\\/]/).pop();
+    const kind = this.isImage ? this.file.split(".").pop().toUpperCase() : "Markdown";
+    const preview = this.media?.find(b => b.type === "image");
+    return v_flex().id("reader").size_full().min_h(0)
+      .on_size_change((size, cx) => { if (this.width !== size.width || this.height !== size.height) { this.width = size.width; this.height = size.height; cx.notify(); } })
+      .bg(t.surface).text_color(t.foreground)
+      .when(!this.embedded, el => el.on_drop((event, cx) => { if (event.paths?.length) this.open(event.paths[0], cx); }))
+      .when(!this.embedded, el => el.child(h_flex().px(16).py(12).gap(10).items_center().border_b(1).border_color(t.border)
+        .child(div().text_size(14).font_semibold().child("Reader"))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(filename || "Markdown & images"))
+        .when(Boolean(this.file), el => el.child(div().px(7).py(3).rounded(4).bg(t.raised).text_size(10).text_color(t.muted).child(kind)))))
+      .when(!this.embedded, el => el.child(h_flex().px(16).py(10).gap(6).items_center().text_size(12)
+        .child(Input.new(this.input).flex_1().min_w(0).h(32).px(10).rounded(6).bg(t.background).border_1().border_color(t.border))
+        .child(button("open", "Open", (_e, cx) => this.open(this.input.value(), cx), true))
+        .when(Boolean(this.file), el => el.child(button("reload", "↻", (_e, cx) => { this.mediaKey = ""; this.reload(cx); cx.notify(); })))))
+      .when(this.text !== null, el => el.child(h_flex().px(12).py(10).gap(6).items_center().text_size(12)
+        .when(!this.isImage && !this.machine, el => el
+          .child(button("preview", "Read", (_e, cx) => { this.mode = "preview"; cx.notify(); }, this.mode === "preview"))
+          .child(button("edit", "Edit", (_e, cx) => this.edit(cx), this.mode === "edit")))
+        .when(Boolean(this.isImage && preview), el => el
+          .child(button("image-fit", this.actualSize ? "Fit to pane" : "Actual size", (_e, cx) => { this.actualSize = !this.actualSize; cx.notify(); }))
+          .child(div().text_color(t.muted).child(preview ? preview.width + " × " + preview.height : "")))
+        .child(div().flex_1())
+        .child(div().text_size(11).text_color(this.dirty() ? t.working : t.muted)
+          .child(this.dirty() ? "Unsaved draft" : this.machine ? "Remote · read only" : this.isImage ? "Image preview" : "Saved"))
         .when(this.dirty(), el => el
-          .child(div().text_color(t.working).child("Unsaved changes · draft kept"))
-          .child(button("save", this.saving ? "Saving…" : "Save", (_e, cx) => this.save(cx)))
-          .child(button("discard", "Discard", (_e, cx) => this.discard(cx))))))
-      .when(Boolean(this.error), el => el.child(div().p(12).text_color(t.blocked).child(this.error)))
+          .child(button("discard", "Discard", (_e, cx) => this.discard(cx)))
+          .child(button("save", this.saving ? "Saving…" : "Save", (_e, cx) => this.save(cx), true)))))
+      .when(Boolean(this.error), el => el.child(div().mx(16).mb(10).p(12).rounded(6).bg(t.raised).text_size(12).text_color(t.blocked).child(this.error)))
       .child(this.mode === "edit" && this.editor
         ? Editor.new(this.editor).flex_1().min_h(0)
-        : div().id("document").flex_1().min_h(0).overflow_y_scrollbar().p(20)
+        : div().id("document").flex_1().min_h(0).overflow_scroll().p(24).bg(this.isImage ? t.background : t.surface)
           .child(this.text !== null
-            ? v_flex().gap(12).w_full()
-              .when(this.mediaBusy, el => el.child(div().text_color(t.muted).child("Rendering images and diagrams…")))
+            ? v_flex().gap(16).w_full()
+              .when(this.isImage, el => el.items_center())
+              .when(this.mediaBusy, el => el.child(div().text_size(12).text_color(t.muted).child("Preparing preview…")))
               .when(Boolean(this.mediaError), el => el.child(div().text_color(t.blocked).child(this.mediaError)))
               .children((this.media || [{ type: "markdown", text: this.text }]).map((block, index) => {
                 if (block.type === "image") {
-                  const width = Math.min(block.width / (block.pixelRatio || 1), Math.max(100, (this.width || 560) - 40));
-                  return v_flex().gap(4).child(image(block.path).w(width).h(width * block.height / block.width))
-                    .when(Boolean(block.alt), el => el.child(div().text_size(12).text_color(t.muted).child(block.alt)));
+                  const available = Math.max(1, (this.width || 560) - 48);
+                  const natural = block.width / (block.pixelRatio || 1);
+                  const width = this.isImage && this.actualSize ? natural : Math.min(natural, available,
+                    this.isImage ? Math.max(80, (this.height || 600) - 220) * block.width / block.height : Infinity);
+                  return v_flex().gap(8).child(image(block.path).w(width).h(width * block.height / block.width))
+                    .when(Boolean(block.alt) && !this.isImage, el => el.child(div().text_size(12).text_color(t.muted).child(block.alt)));
                 }
-                if (block.type === "error") return div().text_color(t.blocked).child(block.text);
+                if (block.type === "error") return div().p(12).rounded(6).bg(t.raised).text_size(12).text_color(t.blocked).child(block.text);
                 return TextView.markdown("markdown-" + this.file + "-" + index, block.text).selectable(true).scrollable(false);
               }))
-            : div().text_color(t.muted).child(this.loading ? "Loading Markdown…" : "Open a Markdown file above or drop one into this pane.")));
+            : v_flex().w_full().py(48).gap(12).items_center()
+              .child(div().text_size(28).text_color(t.accent).child("▤"))
+              .child(div().text_size(20).font_semibold().child(this.loading ? "Opening document…" : "A little room to read"))
+              .child(div().text_size(13).text_color(t.muted).child("Drop Markdown or an image here"))
+              .child(div().text_size(12).text_color(t.dim).child("or enter a file path above"))));
   }
 }

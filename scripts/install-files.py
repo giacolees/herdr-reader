@@ -20,6 +20,7 @@ if not dest.exists():
 for source in (root / "mods/md-files").iterdir():
     if source.is_file():
         shutil.copyfile(source, dest / source.name)
+shutil.copyfile(root / "mods/reader/main.js", dest / "reader.js")
 print(herdr("check", str(dest)).strip())
 name = json.loads(herdr("status"))["layout"]
 if name in ("main", "terminals", "win98"):

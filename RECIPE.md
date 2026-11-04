@@ -1,6 +1,6 @@
-# Markdown reader
+# Reader for Herdr
 
-A native Markdown reader and local-file editor for Herdr. Open a document beside a terminal, read the rendered text, switch to source editing, and save explicitly. An optional Files companion opens selected Markdown files in a reader pane.
+A native Markdown reader and local-file editor for Herdr. Open a document beside a terminal, read the rendered text, switch to source editing, and save explicitly. An optional Files companion opens Markdown and supported images directly inside Files, with a back button to return to the list.
 
 This is a build brief: enough for another agent to rebuild the mod from an empty folder. The code alongside it is one implementation. Read the installed `~/.config/herdr-app/AGENTS.md`, `herdr.d.ts`, and `gpui-kit.d.ts` first; those describe the person's actual runtime.
 
@@ -10,7 +10,7 @@ This is a build brief: enough for another agent to rebuild the mod from an empty
 - Selectable rendered Markdown in a scrollable document area, using the native renderer. Empty documents stay empty; loading and unreadable-file states are explicit.
 - An Edit button for local files, switching to a native source editor. Preview renders the draft without writing it.
 - Unsaved drafts show a status label, Save and Discard buttons. Errors appear below the toolbar.
-- In the optional Files panel, selecting a `.md` or `.markdown` file reveals an Open in reader button in the preview header.
+- In Files, clicking Markdown or a supported image embeds Reader. The ← Files button returns to the list and preserves expanded folders.
 
 ## Behavior
 
@@ -24,13 +24,13 @@ This is a build brief: enough for another agent to rebuild the mod from an empty
 
 ## Files companion
 
-Clone the shipped Files mod to `md-files` before customizing it; never edit Herdr's shipped folder. Retain its tree, directory tracking, remote reads, file preview, limits, icons and error handling. Add Open in reader to Markdown previews only. Use the selected file's absolute path and machine in reader props. Target the focused pane in the current tab with `pane.split`, direction right; if there is no target pane, use `tab.new` with the reader mod. Open a new pane for each action so another reader's dirty draft is untouched.
+Clone the shipped Files mod to `md-files` before customizing it; never edit Herdr's shipped folder. Retain its tree, directory tracking, remote reads, limits, icons and error handling. Create a retained Reader child with `cx.new` when a supported file is clicked, using the selected absolute path, machine and `embedded: true`. Embed the child inside the Files body instead of creating a pane. Back releases the child and restores the file list with expanded folders preserved. Drafts persist in the Files copy's local storage and recover when reopening a document. Other files keep their source previews. Copy Reader into the companion during installation so both use the same implementation.
 
 Install into the current personal layout by changing its Files block's `content.mod` to `md-files`, preserving the block ID and other layout settings. Clone a shipped layout before changing its structure. Back up the person's original layout before editing. Do not ship a `layouts/` folder or replace their window layout. Other layouts remain as they were. Merge optional key bindings if desired; this implementation adds none.
 
 ## Built from
 
-- `mods/md-viewer/main.js` and `mod.json`, with `place: "none"` so discovery does not dock an extra panel.
+- `mods/reader/main.js` and `mod.json`, with `place: "none"` so discovery does not dock an extra panel.
 - `mods/md-files/main.js`, `mod.json`, and SVG icons for the optional Files companion. It is based on Herdr 0.1.12's Files mod; future versions may need rebuilding from the installed shipped Files implementation.
 - Native `View`/`div` from `gpui-kit`; flex elements, InputState/Input, TextView, EditorState/Editor from `gpui-base`.
 - `props`, `focused`, `home`, `theme`, `settings`, `readTextFile` and `writeTextFile` from `herdr`. The companion also uses live spaces/panes, folder watching, directory and Git reads through `exec`, and pane/tab commands.
@@ -43,17 +43,17 @@ Read every repository file before installing. `scripts/install.sh` copies the re
 Open a reader beside a terminal:
 
 ```sh
-herdr-app do pane.split '{"direction":"right","mod":"md-viewer","props":{"file":"/absolute/path/README.md"}}'
+herdr-app do pane.split '{"direction":"right","mod":"reader","props":{"file":"/absolute/path/README.md"}}'
 ```
 
 For a remote read, add `"on":"machine-name"` to props and use an absolute remote path. Dropped file paths are local, so use them with local readers only.
 
 ## Done when
 
-- `herdr-app check mods/md-viewer` and `herdr-app check mods/md-files` pass. Check installed copies too, and try the asynchronous states in the running app.
+- `herdr-app check mods/reader` and `herdr-app check mods/md-files` pass. Check installed copies too, and try the asynchronous states in the running app.
 - A Markdown document opens by path, Enter and drop; empty and missing files behave correctly.
 - Edit, Preview and Save work on a temporary local file, and saved disk content matches the draft.
 - External edits cause Save to fail without losing either version; Discard reloads the external version.
 - An old read cannot overwrite a new draft; a pane reload recovers a draft with its original conflict snapshot.
-- Files selection exposes Open in reader for Markdown only and passes the selected file and machine to a new pane.
+- Files selection embeds Reader for supported files; Back restores the file list without opening a pane.
 - Remote files render without editing controls, and existing layouts and key bindings are preserved.

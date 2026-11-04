@@ -60,3 +60,20 @@ test('render removes generated cache files unused for 24 hours and retains recen
     assert.deepEqual((await readdir(cache)).sort(), [recent, unrelated].sort());
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('standalone image files render with dimensions, orientation and readable failures', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'image-viewer-'));
+  try {
+    const file = path.join(root, 'photo #1 100%.jpg');
+    await sharp({ create: { width: 80, height: 40, channels: 3, background: '#336699' } })
+      .jpeg().withMetadata({ orientation: 6 }).toFile(file);
+    const blocks = await render({ root, file, imageFile: true });
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].type, 'image');
+    assert.equal(blocks[0].alt, 'photo #1 100%.jpg');
+    assert.equal(blocks[0].width, 40);
+    assert.equal(blocks[0].height, 80);
+    const failed = await render({ root, file: path.join(root, 'missing.png'), imageFile: true });
+    assert.equal(failed[0].type, 'error');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

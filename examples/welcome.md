@@ -2,18 +2,18 @@
 
 Read project notes, review a plan, and edit documentation without leaving **Herdr**.
 
-## From a file to a reader pane
+## From Files to Reader
 
-1. Select a Markdown file in the **Files** panel.
-2. Choose **Open in reader**.
-3. Read the rendered document, or choose **Edit** to work on the source.
+1. Click a Markdown or image file in **Files** to open Reader in place.
+2. Read the document, or choose **Edit** for Markdown source.
+3. Choose **← Files** to return to the file list.
 
 ## A clear writing workflow
 
 | Control | What it does |
 | --- | --- |
 | **Edit** | Work on Markdown source with line numbers and soft wrapping |
-| **Preview** | See the rendered draft before saving |
+| **Read** | See the rendered draft before saving |
 | **Save** | Write your changes after checking for external edits |
 | **Discard** | Abandon the draft and reload the file |
 
@@ -22,7 +22,7 @@ Read project notes, review a plan, and edit documentation without leaving **Herd
 ## Code belongs in documentation
 
 ```sh
-herdr-app do pane.split '{"direction":"right","mod":"md-viewer"}'
+herdr-app do pane.split '{"direction":"right","mod":"reader"}'
 ```
 
 - Selectable text and native Markdown rendering
@@ -31,4 +31,4 @@ herdr-app do pane.split '{"direction":"right","mod":"md-viewer"}'
 - Draft recovery and conflict protection for local edits
 - Read-only viewing of remote Markdown files
 
-[View the project on GitHub](https://github.com/giacolees/herdr-md-viewer)
+[View the project on GitHub](https://github.com/giacolees/herdr-reader)

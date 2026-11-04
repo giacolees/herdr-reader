@@ -1,6 +1,6 @@
-# Herdr Markdown Viewer
+# Reader for Herdr
 
-A native Markdown reader and editor pane for [Herdr](https://herdr.dev). Renders `.md` and `.markdown` files directly with Herdr's built-in `TextView`, with selectable text, scrolling, theme colors, automatic refresh every three seconds, and local file editing with explicit saves. Images and Mermaid diagrams are rendered by a local Node.js helper.
+A native Markdown and image reader for [Herdr](https://herdr.dev), with Markdown editing and a Files pane for browsing, creating, importing, renaming and deleting files. Renders `.md` and `.markdown` files directly with Herdr's built-in `TextView`, with selectable text, scrolling, theme colors, automatic refresh every three seconds, and local file editing with explicit saves. Images and Mermaid diagrams are rendered by a local Node.js helper.
 
 ![Markdown reader preview](preview.png)
 
@@ -9,6 +9,11 @@ Available to the Herdr community through the `herdr-mod` topic. [RECIPE.md](RECI
 ## Install
 
 With Herdr, Node.js 22+ and npm installed:
+
+```sh
+git clone https://github.com/giacolees/herdr-reader.git
+cd herdr-reader
+```
 
 ```sh
 ./scripts/install.sh
@@ -22,18 +27,20 @@ To also connect the Files pane in the active layout:
 
 This clones Herdr's shipped Files mod into `md-files`, installs the companion, and changes the active personal layout's Files reference. A shipped layout is cloned first. The original layout file is backed up under `~/.config/herdr-app/backups/md-viewer/`. Other layouts retain their own Files mod. Requires Python 3 for this optional integration.
 
-The basic install copies this mod into `${HERDR_APP_HOME:-~/.config/herdr-app}/mods/md-viewer` and runs Herdr's checker. Run again after updating the repository.
+The basic install copies this mod into `${HERDR_APP_HOME:-~/.config/herdr-app}/mods/reader` and runs Herdr's checker. Run again after updating the repository.
+
+Existing `md-viewer` panes remain supported after upgrading; new panes use `reader`.
 
 ## Open a file beside your terminal
 
 ```sh
-herdr-app do pane.split '{"direction":"right","mod":"md-viewer","props":{"file":"/absolute/path/README.md"}}'
+herdr-app do pane.split '{"direction":"right","mod":"reader","props":{"file":"/absolute/path/README.md"}}'
 ```
 
-Or open an empty viewer and type a path or drop a Markdown file into it:
+Or open an empty viewer and type a path or drop a Markdown or image file into it:
 
 ```sh
-herdr-app do pane.split '{"direction":"right","mod":"md-viewer"}'
+herdr-app do pane.split '{"direction":"right","mod":"reader"}'
 ```
 
 Press Enter or Open to load a path. Relative paths resolve against the terminal folder focused when the viewer starts. Local `~/` paths are supported. Refresh reloads immediately; changes are otherwise picked up within three seconds. Empty documents render as empty documents; unreadable files display an error and are retried automatically. Each pane holds its own document. Files are written only when you press Save.
@@ -42,7 +49,17 @@ For a remote file, pass an absolute path and `"on":"machine-name"` in props. Dra
 
 ## Open from Files
 
-In the connected Files pane, select a `.md` or `.markdown` file, then click **Open in reader** in the preview header. This opens a new reader pane beside the focused pane. Non-Markdown files keep the normal preview. The companion includes the Files mod from Herdr 0.1.12 and its native file browser behavior; Herdr updates do not replace this personal clone.
+In the connected Files pane, click a Markdown or supported image file to open Reader directly inside Files. Click **← Files** to return to the list with expanded folders preserved. No new pane is created. Markdown drafts are kept when returning to the list and recovered when you reopen the file. Other files retain their normal source preview.
+
+Use the **new file** or **new folder** SVG icon in the Files header to create an item. Enter a name or a path relative to the displayed root, such as `docs/notes.md`, then press Enter or Create. Parent folders must exist. Existing items are never overwritten, and errors keep the entered name for correction. New items appear in the list immediately. Creation also works on connected Unix machines.
+
+Drop one or more files from Finder or your file manager anywhere in Files to copy them into the selected folder, including while a preview is open. Expanding a folder selects it as the destination; the drop strip shows its full path. Collapsing it returns the destination to its parent. **Use root** resets the destination to the browser root. Dropping directly onto a folder row copies into that folder, even when it is collapsed, without changing the selected destination. Originals remain in place, existing names are skipped with an error, and successful copies appear immediately. Dropping folders and importing into remote folders are not supported.
+
+Right-click a file or folder and choose **Rename…**, enter its new name, then press Enter or Rename. Existing names are refused. Folder renames preserve expanded descendants and the selected copy destination.
+
+Right-click a file or folder and choose **Delete…**. Confirm **Delete permanently** to remove it; deleting a folder also removes its contents. Cancel leaves it untouched. Failed deletions show an error, and the list refreshes after a successful deletion.
+
+Reader also remains available as a standalone pane using the command above.
 
 ## Edit and save
 
@@ -53,14 +70,16 @@ Automatic refresh pauses while editing or when unsaved changes exist. Opening an
 ## Validate
 
 ```sh
-herdr-app check mods/md-viewer
+herdr-app check mods/reader
 herdr-app check ~/.config/herdr-app/mods/md-files
-node --test tests/viewer.test.mjs
+node --test tests/viewer.test.mjs tests/files.test.mjs tests/renderer.test.mjs
 ```
 
 Herdr must provide the `gpui-kit`, `gpui-base`, and `herdr` runtime modules. This is a native mod, not a browser or Node application. Text and links use Herdr’s native Markdown renderer.
 
 ## Images and Mermaid
+
+Open standalone PNG, JPEG, GIF, WebP, SVG, AVIF or TIFF files using the same path field, drag-and-drop, or a click in Files. Images scale to the pane width, preserve their aspect ratio and display their filename. Image files are read only; GIF previews show a still frame. Press Refresh to pick up changes to the image. Remote image files currently show an unsupported-preview message.
 
 The installer installs a local rendering helper and Chromium through Mermaid CLI. PNG, JPEG, SVG and other Sharp-supported images are converted to native previews. Relative paths resolve against the Markdown file’s folder; HTTP(S), file URLs, data URLs and reference-style Markdown images are supported. Images appear as separate blocks, including images embedded in a paragraph or list; HTML `<img>` tags are not handled by this helper.
 

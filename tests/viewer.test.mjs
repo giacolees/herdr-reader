@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const source = readFileSync(new URL('../mods/md-viewer/main.js', import.meta.url), 'utf8')
+const source = readFileSync(new URL('../mods/reader/main.js', import.meta.url), 'utf8')
   .replace(/^import .*;\n/gm, '').replace('export default class', 'return class');
 
 function setup(options = { file: '/tmp/test.md' }, storage = new Map()) {
@@ -70,4 +70,27 @@ test('remote files remain read only; empty files refresh correctly', async () =>
   remote.view.edit(remote.cx); assert.equal(remote.view.editor, null);
   const local = setup(); await local.settle(); local.files.set(local.view.file, '');
   local.view.reload(local.cx); await local.settle(); assert.equal(local.view.text, '');
+});
+
+test('standalone images open without reading binary data or exposing an editor', async () => {
+  const { view, cx, settle } = setup({ file: '/tmp/PHOTO.PNG' });
+  await settle();
+  assert.equal(view.isImage, true);
+  assert.equal(view.text, '');
+  view.edit(cx);
+  assert.equal(view.editor, null);
+  assert.equal(view.dirty(), false);
+  view.open('/tmp/test.md', cx);
+  await settle();
+  assert.equal(view.isImage, false);
+  assert.equal(view.media, null);
+});
+
+test('opening an image cannot discard a dirty Markdown draft', async () => {
+  const { view, cx, settle } = setup();
+  await settle(); view.edit(cx); view.editor.change('# Draft');
+  view.open('/tmp/photo.png', cx);
+  assert.equal(view.file, '/tmp/test.md');
+  assert.equal(view.text, '# Draft');
+  assert.match(view.error, /Save or discard/);
 });

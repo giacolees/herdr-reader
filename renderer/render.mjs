@@ -24,7 +24,7 @@ async function cleanupCache(cache) {
   }
 }
 
-export async function render({ text, file, root, dark = false }) {
+export async function render({ text, file, root, dark = false, imageFile = false }) {
   const cache = path.join(root, 'data/md-viewer/media');
   await mkdir(cache, { recursive: true });
   const blocks = [];
@@ -57,7 +57,7 @@ export async function render({ text, file, root, dark = false }) {
         if (!match) throw new Error('Unsupported data URL');
         bytes = match[1] ? Buffer.from(match[2], 'base64') : Buffer.from(decodeURIComponent(match[2]));
       } else {
-        const local = source.startsWith('file:') ? fileURLToPath(source) : path.resolve(path.dirname(file), decodeURIComponent(source));
+        const local = imageFile ? file : source.startsWith('file:') ? fileURLToPath(source) : path.resolve(path.dirname(file), decodeURIComponent(source));
         bytes = await readFile(local);
       }
       const png = await sharp(bytes, { limitInputPixels: 40000000 }).rotate().resize({ width: diagram ? 3200 : 1600, height: diagram ? 4800 : 2400, fit: 'inside', withoutEnlargement: true }).png().toBuffer({ resolveWithObject: true });
@@ -69,7 +69,8 @@ export async function render({ text, file, root, dark = false }) {
       if (diagram) markdown('```mermaid\n' + source + '\n```');
     }
   }
-  for (const token of marked.lexer(text)) {
+  if (imageFile) await picture(file, path.basename(file));
+  for (const token of imageFile ? [] : marked.lexer(text)) {
     if (token.type === 'code' && token.lang?.trim().toLowerCase() === 'mermaid') {
       await picture(token.text, 'Mermaid diagram', true);
       continue;
