@@ -272,8 +272,8 @@ export default class Files extends View {
     cx.notify();
   }
 
-  finishFileDrag(cx) {
-    const source = this.dragFile, target = this.dragTarget;
+  finishFileDrag(cx, folder = null) {
+    const source = this.dragFile, target = folder === null ? this.dragTarget : { path: folder };
     const active = this.dragActive;
     this.cancelFileDrag(cx);
     if (active && source && target) this.moveFile(source.path, target.path, source.context, cx);
@@ -429,7 +429,8 @@ export default class Files extends View {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
       out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().bg(entry.dir && (this.selectedFolder === path || (this.dragActive && this.dragTarget?.path === path)) ? t.selected : t.background).hover(s => s.bg(entry.dir ? t.selected : t.hover))
         .on_mouse_down("left", (event, cx) => { this.suppressClick = false; if (!entry.dir) this.startFileDrag(path, event.position, cx); })
-        .when(entry.dir, el => el.on_mouse_move((event, cx) => this.targetFileDrag(path, event.bounds, cx)))
+        .when(entry.dir, el => el.on_mouse_move((event, cx) => this.targetFileDrag(path, event.bounds, cx))
+          .on_mouse_up("left", (_event, cx) => { if (this.dragActive) { cx.stop_propagation(); this.finishFileDrag(cx, path); } }))
         .when(entry.dir, el => el.on_drop((event, cx) => {
           cx.stop_propagation();
           this.importFiles(event.paths, cx, path);
@@ -466,6 +467,15 @@ export default class Files extends View {
           .child(action("new-file", svg("mods/md-files/file-plus.svg").size(16).text_color(t.muted), (_e, cx) => this.beginCreate("file", cx)))
           .child(action("new-folder", svg("mods/md-files/folder-plus.svg").size(16).text_color(t.muted), (_e, cx) => this.beginCreate("folder", cx))))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
+      .when(!this.file && Boolean(this.root), el => el.child(h_flex().id("files-root-target").h(32).flex_none().px(12).gap(8).items_center()
+        .bg(this.dragActive && this.dragTarget?.path === "" ? t.selected : t.surface)
+        .border_b(1).border_color(this.dragActive && this.dragTarget?.path === "" ? t.accent : t.border)
+        .on_mouse_move((event, cx) => this.targetFileDrag("", event.bounds, cx))
+        .on_mouse_up("left", (_event, cx) => { if (this.dragActive) { cx.stop_propagation(); this.finishFileDrag(cx, ""); } })
+        .on_drop((event, cx) => { cx.stop_propagation(); this.importFiles(event.paths, cx, ""); })
+        .child(svg("mods/md-files/folder.svg").size(16).text_color(t.accent))
+        .child(div().text_size(12).font_semibold().child("Root folder"))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(this.root.split(/[\\/]/).pop()))))
       .when(Boolean(this.moveBusy || this.moveError || this.moveMessage), el => el.child(div().px(12).py(8).text_size(12).text_color(this.moveError ? t.blocked : t.muted).child(this.moveBusy ? "Moving file…" : this.moveError || this.moveMessage)))
       .when(Boolean(this.importBusy || this.importMessage || this.importError), el => el.child(v_flex().px(12).py(8).gap(4)
         .when(this.importBusy, el => el.child(div().text_size(12).text_color(t.muted).child("Copying dropped files…")))
@@ -497,13 +507,14 @@ export default class Files extends View {
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
       .when(Boolean(this.file), el => el.child(this.reader ? div().flex_1().min_h(0).child(this.reader) : this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")))
-      .child(h_flex().id("files-drop-hint").on_mouse_move((event, cx) => this.targetFileDrag("", event.bounds, cx)).flex_none().px(12).py(10).gap(8).items_center()
+      .child(h_flex().id("files-drop-hint").on_mouse_move((event, cx) => this.targetFileDrag("", event.bounds, cx))
+        .on_mouse_up("left", (_event, cx) => { if (this.dragActive) { cx.stop_propagation(); this.finishFileDrag(cx, ""); } }).flex_none().h(64).px(12).py(10).gap(8).items_center()
         .border_t(1).border_color(this.dropHovered ? t.accent : t.border)
         .bg(this.dropHovered ? t.selected : t.surface)
         .child(svg("mods/md-files/import.svg").size(18).flex_none().text_color(this.dropHovered ? t.accent : t.muted))
         .child(v_flex().gap(3).flex_1().min_w(0)
           .child(div().text_size(12).text_color(this.dropHovered ? t.accent : t.muted)
-            .child(this.dragActive ? (this.dragTarget ? "Release to move into this folder" : "Drag onto a folder to move") : this.importBusy ? "Copying files…" : this.on ? "Drop imports need a local folder" : "Drop files to copy here"))
+            .child(this.dragActive ? (this.dragTarget ? (this.dragTarget.path === "" ? "Release to move to root" : "Release to move into this folder") : "Drag onto a folder to move") : this.importBusy ? "Copying files…" : this.on ? "Drop imports need a local folder" : "Drop files to copy here"))
           .child(div().text_size(11).truncate().text_color(t.dim).child((this.dragActive && this.dragTarget ? (this.dragTarget.path ? this.root + "/" + this.dragTarget.path : this.root) : this.copyDestination()) || "Open a folder first")))
         .when(Boolean(this.selectedFolder), el => el.child(action("copy-to-root", "Use root", (_e, cx) => { this.selectedFolder = ""; cx.notify(); }))))
       .when(!this.file && Boolean(this.menu), el => el.child(v_flex().id("file-context-menu").absolute().left(this.menuX ?? 10).top(this.menuY ?? 42).w(Math.min(180, Math.max(1, (this.panelWidth || 368) - 8))).p(5).gap(3).rounded(6).bg(t.popover).border_1().border_color(t.border)

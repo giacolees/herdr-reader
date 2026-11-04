@@ -275,3 +275,20 @@ test('clicks and cancelled or untargeted internal drags do not move files', asyn
   view.cancelFileDrag(cx); view.finishFileDrag(cx); await settle();
   assert.equal(moved, 0);
 });
+
+test('releasing on an explicit root target moves a nested file to root despite stale folder hover', async () => {
+  const { mkdtemp, mkdir, writeFile, readFile, access, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const root = await mkdtemp(tmpdir() + '/reader-move-root-');
+  try {
+    await mkdir(root + '/docs'); await writeFile(root + '/docs/note.md', 'root move');
+    const { view, cx, settle } = await creationSetup(root);
+    view.startFileDrag('docs/note.md', { x: 10, y: 80 }, cx);
+    view.trackFileDrag({ position: { x: 30, y: 40 } }, cx);
+    view.targetFileDrag('docs', { x: 0, y: 30, width: 300, height: 28 }, cx);
+    view.finishFileDrag(cx, ''); await settle();
+    assert.equal(await readFile(root + '/note.md', 'utf8'), 'root move');
+    await assert.rejects(access(root + '/docs/note.md'));
+    assert.match(view.moveMessage, /to root/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

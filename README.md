@@ -55,7 +55,7 @@ Use the **new file** or **new folder** SVG icon in the Files header to create an
 
 Drop one or more files from Finder or your file manager anywhere in Files to copy them into the selected folder, including while a preview is open. Expanding a folder selects it as the destination; the drop strip shows its full path. Collapsing it returns the destination to its parent. **Use root** resets the destination to the browser root. Dropping directly onto a folder row copies into that folder, even when it is collapsed, without changing the selected destination. Originals remain in place, existing names are skipped with an error, and successful copies appear immediately. Dropping folders and importing into remote folders are not supported.
 
-To move a file already in Files, drag its row onto a folder and release. The folder is highlighted and the bottom strip shows the target path. Drop on the bottom strip to move it to the browser root. Releasing elsewhere or leaving the pane cancels the move. Existing destination names are never overwritten.
+To move a file already in Files, drag its row onto a folder and release. The folder is highlighted and the bottom strip shows the target path. Drop on the **Root folder** row below the header, or on the bottom strip, to move it to the browser root. Releasing elsewhere or leaving the pane cancels the move. Existing destination names are never overwritten.
 
 Right-click a file or folder and choose **Rename…**, enter its new name, then press Enter or Rename. Existing names are refused. Folder renames preserve expanded descendants and the selected copy destination.
 
