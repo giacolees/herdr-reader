@@ -57,6 +57,10 @@ Drop one or more files from Finder or your file manager anywhere in Files to cop
 
 To move a file already in Files, drag its row onto a folder and release. The folder is highlighted and the bottom strip shows the target path. Drop on the **Root folder** row below the header, or on the bottom strip, to move it to the browser root. Releasing elsewhere or leaving the pane cancels the move. Existing destination names are never overwritten.
 
+Right-click a local `.html` or `.htm` file and choose **Open in browser** to launch it in your configured default web browser. Remote HTML files do not show this action.
+
+On macOS, right-click a local file or folder and choose **Reveal in Finder** to open its containing folder with the item selected.
+
 Right-click a file or folder and choose **Rename…**, enter its new name, then press Enter or Rename. Existing names are refused. Folder renames preserve expanded descendants and the selected copy destination.
 
 Right-click a file or folder and choose **Delete…**. Confirm **Delete permanently** to remove it; deleting a folder also removes its contents. Cancel leaves it untouched. Failed deletions show an error, and the list refreshes after a successful deletion.

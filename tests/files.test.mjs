@@ -292,3 +292,54 @@ test('releasing on an explicit root target moves a nested file to root despite s
     assert.match(view.moveMessage, /to root/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('browser menu is limited to local HTML files and passes literal paths to the helper', async () => {
+  const calls = [];
+  const BrowserFiles = new Function('View', 'Reader', 'exec', 'appHome', source)(class {}, class {},
+    async (command, args) => { calls.push([command, args]); return { code: 0 }; }, () => '/app');
+  const view = new BrowserFiles(); view.root = '/tmp'; view.on = null; view.context = {};
+  view.current = context => context === view.context;
+  const jobs = []; const cx = { notify() {}, spawn(fn) { jobs.push(fn(this)); } };
+  for (const path of ['index.html', 'page.HTM', 'nested/Test.HTML']) assert.ok(view.canOpenInBrowser({ path, dir: false }));
+  assert.equal(view.canOpenInBrowser({ path: 'folder.html', dir: true }), false);
+  assert.equal(view.canOpenInBrowser({ path: 'readme.md', dir: false }), false);
+  view.on = 'remote'; assert.equal(view.canOpenInBrowser({ path: 'index.html', dir: false }), false); view.on = null;
+  view.menu = { path: 'a #1 $test.html', dir: false };
+  view.openInBrowser(cx); await Promise.all(jobs);
+  assert.equal(view.menu, null);
+  assert.deepEqual(calls[0], ['node', ['/app/mods/reader/renderer/open-browser.mjs', '/tmp/a #1 $test.html']]);
+});
+
+test('HTML launcher uses configured browsers with encoded local URLs', async () => {
+  const { openHtml } = await import('../renderer/open-browser.mjs');
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    const commands = [];
+    openHtml('/tmp/a #1 $test.html', { platform, home: '/home/test', run(cmd, args) {
+      commands.push([cmd, args]);
+      if (cmd.includes('plutil')) return JSON.stringify({ LSHandlers: [{ LSHandlerURLScheme: 'https', LSHandlerRoleAll: 'org.mozilla.firefox' }] });
+      if (cmd === 'xdg-settings') return 'firefox.desktop\n';
+      return '';
+    } });
+    const last = commands.at(-1);
+    if (platform === 'darwin') { assert.equal(last[0], '/usr/bin/open'); assert.equal(last[1][1], 'org.mozilla.firefox'); assert.match(last[1][2], /a%20%231%20/); }
+    if (platform === 'linux') { assert.equal(last[0], 'gtk-launch'); assert.equal(last[1][0], 'firefox.desktop'); }
+    if (platform === 'win32') { assert.equal(last[0], 'powershell'); assert.ok(last[1][2].includes('HKCU:'+String.fromCharCode(92)+'Software')); }
+  }
+});
+
+test('Reveal in Finder selects local files and folders with literal paths and reports failures', async () => {
+  const calls = []; let fail = false;
+  const FinderFiles = new Function('View', 'Reader', 'exec', 'window', source)(class {}, class {},
+    async (cmd, args) => { calls.push([cmd, args]); return { code: fail ? 1 : 0, stderr: fail ? 'Not found' : '' }; }, () => ({ platform: 'macos' }));
+  const view = new FinderFiles(); view.root = '/tmp'; view.context = {}; view.current = c => c === view.context;
+  const jobs = []; const cx = { notify() {}, spawn(fn) { jobs.push(fn(this)); } };
+  for (const dir of [false, true]) {
+    view.menu = { path: 'a #1 $test', dir }; assert.ok(view.canRevealInFinder());
+    view.revealInFinder(cx); await Promise.all(jobs.splice(0));
+    assert.equal(view.menu, null); assert.deepEqual(calls.at(-1), ['open', ['-R', '/tmp/a #1 $test']]);
+  }
+  view.on = 'remote'; view.menu = { path: 'file.md', dir: false };
+  assert.equal(view.canRevealInFinder(), false); view.revealInFinder(cx); assert.equal(calls.length, 2);
+  view.on = null; fail = true; view.revealInFinder(cx); await Promise.all(jobs.splice(0));
+  assert.match(view.revealError, /Not found/);
+});

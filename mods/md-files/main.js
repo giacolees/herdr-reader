@@ -1,7 +1,7 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, Input, InputState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, appHome } from "herdr";
 
 import Reader from "./reader.js";
 
@@ -75,7 +75,7 @@ export default class Files extends View {
       const saved = this.saved.get(next);
       this.creating = null; this.createError = ""; this.createBusy = false;
       this.renameTarget = null; this.renameBusy = false; this.renameError = "";
-      this.dragFile = null; this.dragTarget = null; this.dragActive = false; this.moveBusy = false; this.moveError = ""; this.moveMessage = "";
+      this.dragFile = null; this.dragTarget = null; this.dragActive = false; this.moveBusy = false; this.moveError = ""; this.moveMessage = ""; this.browserError = ""; this.revealError = "";
       this.importBusy = false; this.importMessage = ""; this.importError = "";
       this.menu = null; this.deleteTarget = null; this.deleteError = ""; this.deleteBusy = false;
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
@@ -314,6 +314,46 @@ export default class Files extends View {
     cx.notify();
   }
 
+  canOpenInBrowser(item = this.menu) {
+    return Boolean(item && !item.dir && !this.on && /\.html?$/i.test(item.path));
+  }
+
+  openInBrowser(cx) {
+    if (!this.canOpenInBrowser()) return;
+    const path = `${this.root}/${this.menu.path}`, context = this.context;
+    this.menu = null; this.browserError = "";
+    cx.spawn(async cx => {
+      try {
+        const result = await exec("node", [appHome() + "/mods/reader/renderer/open-browser.mjs", path]);
+        if (result.code !== 0) throw new Error(result.stderr || "Could not open the default browser.");
+      } catch (error) {
+        if (this.current(context)) this.browserError = "Open in browser failed. " + String(error.message || error).slice(0, 300);
+      }
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  canRevealInFinder() {
+    return Boolean(this.menu && !this.on && window()?.platform === "macos");
+  }
+
+  revealInFinder(cx) {
+    if (!this.canRevealInFinder()) return;
+    const path = `${this.root}/${this.menu.path}`, context = this.context;
+    this.menu = null; this.revealError = "";
+    cx.spawn(async cx => {
+      try {
+        const result = await exec("open", ["-R", path]);
+        if (result.code !== 0) throw new Error(result.stderr || "Could not reveal this item.");
+      } catch (error) {
+        if (this.current(context)) this.revealError = "Reveal in Finder failed. " + String(error.message || error).slice(0, 300);
+      }
+      cx.notify();
+    });
+    cx.notify();
+  }
+
   requestRename(cx) {
     if (!this.menu || this.renameBusy) return;
     this.renameTarget = { ...this.menu, context: this.context };
@@ -459,7 +499,7 @@ export default class Files extends View {
       .on_mouse_down_out((_event, cx) => this.cancelFileDrag(cx))
       .when(this.dragActive, el => el.cursor_grabbing())
       .on_size_change((size, _cx) => { this.panelHeight = size.height; this.panelWidth = size.width; })
-      .on_mouse_down("right", (event, cx) => { if (this.menu) { this.menuX = Math.max(4, Math.min((event.local_position?.x ?? 10) + 4, (this.panelWidth || 368) - 184)); this.menuY = Math.max(4, Math.min((event.local_position?.y ?? 42) + 4, (this.panelHeight || 600) - 112)); cx.notify(); } })
+      .on_mouse_down("right", (event, cx) => { if (this.menu) { this.menuX = Math.max(4, Math.min((event.local_position?.x ?? 10) + 4, (this.panelWidth || 368) - 184)); this.menuY = Math.max(4, Math.min((event.local_position?.y ?? 42) + 4, (this.panelHeight || 600) - (112 + (this.canOpenInBrowser() ? 32 : 0) + (this.canRevealInFinder() ? 32 : 0)))); cx.notify(); } })
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .when(Boolean(this.file), el => el.child(div().id("files-back").px(6).py(4).rounded(5).hover(s => s.bg(t.hover)).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("← Files")))
         .when(!this.file, el => el.child(div().font_semibold().child("Files")))
@@ -476,6 +516,8 @@ export default class Files extends View {
         .child(svg("mods/md-files/folder.svg").size(16).text_color(t.accent))
         .child(div().text_size(12).font_semibold().child("Root folder"))
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(this.root.split(/[\\/]/).pop()))))
+      .when(Boolean(this.revealError), el => el.child(div().px(12).py(8).text_size(12).text_color(t.blocked).child(this.revealError)))
+      .when(Boolean(this.browserError), el => el.child(div().px(12).py(8).text_size(12).text_color(t.blocked).child(this.browserError)))
       .when(Boolean(this.moveBusy || this.moveError || this.moveMessage), el => el.child(div().px(12).py(8).text_size(12).text_color(this.moveError ? t.blocked : t.muted).child(this.moveBusy ? "Moving file…" : this.moveError || this.moveMessage)))
       .when(Boolean(this.importBusy || this.importMessage || this.importError), el => el.child(v_flex().px(12).py(8).gap(4)
         .when(this.importBusy, el => el.child(div().text_size(12).text_color(t.muted).child("Copying dropped files…")))
@@ -520,6 +562,8 @@ export default class Files extends View {
       .when(!this.file && Boolean(this.menu), el => el.child(v_flex().id("file-context-menu").absolute().left(this.menuX ?? 10).top(this.menuY ?? 42).w(Math.min(180, Math.max(1, (this.panelWidth || 368) - 8))).p(5).gap(3).rounded(6).bg(t.popover).border_1().border_color(t.border)
         .on_mouse_down_out((_e, cx) => { this.menu = null; cx.notify(); })
         .child(div().px(7).py(4).text_size(11).text_color(t.muted).truncate().child(this.menu.path.split("/").pop()))
+        .when(this.canOpenInBrowser(), el => el.child(action("open-in-browser", "Open in browser", (_e, cx) => { cx.stop_propagation(); this.openInBrowser(cx); })))
+        .when(this.canRevealInFinder(), el => el.child(action("reveal-in-finder", "Reveal in Finder", (_e, cx) => { cx.stop_propagation(); this.revealInFinder(cx); })))
         .child(action("rename-menu-item", "Rename…", (_e, cx) => { cx.stop_propagation(); this.requestRename(cx); }))
         .child(action("delete-menu-item", "Delete…", (_e, cx) => { cx.stop_propagation(); this.requestDelete(cx); }).text_color(t.blocked))));
   }
