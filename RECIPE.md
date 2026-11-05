@@ -21,10 +21,13 @@ This is a build brief: enough for another agent to rebuild the mod from an empty
 5. Save local files using `writeTextFile(file, draft, originalSnapshot)`. The expected snapshot protects against external changes. On failure preserve the draft, show the error and never force an overwrite. Edits made during a save remain dirty after that save completes.
 6. Store dirty drafts and their original snapshots in per-copy `localStorage`, keyed by machine and file. Recover on pane initialization after a reload/restart. Clear saved/discarded drafts. State belongs to that pane; save before removing it.
 7. Block opening another path or refreshing while dirty. Discard intentionally abandons the draft and reloads disk content. Remote files remain read only because the write API is local only.
+8. Preview supported standalone images and Markdown images through the local Node helper. For SSH files, use the local Markdown parser to plan unique remote image paths, then read their bytes through `exec` with `on` set to the selected machine. Resolve relative paths on that machine, pass filenames as shell arguments, encode binary as base64 and enforce a 5 MiB limit per image to fit `exec`'s 8 MiB output limit. Render HTTP(S), data URLs and Mermaid locally. Show individual image failures without hiding the document, discard stale previews and remove temporary requests even after cancellation. Remote hosts need only Unix `sh`, `wc`, `head` and `base64`.
 
 ## Files companion
 
 Clone the shipped Files mod to `md-files` before customizing it; never edit Herdr's shipped folder. Retain its tree, directory tracking, remote reads, limits, icons and error handling. Create a retained Reader child with `cx.new` when a supported file is clicked, using the selected absolute path, machine and `embedded: true`. Embed the child inside the Files body instead of creating a pane. Back releases the child and restores the file list with expanded folders preserved. Drafts persist in the Files copy's local storage and recover when reopening a document. Other files keep their source previews. Copy Reader into the companion during installation so both use the same implementation.
+
+The file context menu offers Copy path for local and remote files and folders, using `cx.write_to_clipboard` with the absolute path. Offer Download only for SSH files. Choose a local folder with `pickFolder`, read binary data as base64 in bounded chunks through remote `exec`, and append it locally using `renderer/download.mjs`. Keep progress visible, refuse overwrites including destination races, and clean up partial data on failures or location changes. Include the download helper in the installer.
 
 Install into the current personal layout by changing its Files block's `content.mod` to `md-files`, preserving the block ID and other layout settings. Clone a shipped layout before changing its structure. Back up the person's original layout before editing. Do not ship a `layouts/` folder or replace their window layout. Other layouts remain as they were. Merge optional key bindings if desired; this implementation adds none.
 
@@ -34,7 +37,7 @@ Install into the current personal layout by changing its Files block's `content.
 - `mods/md-files/main.js`, `mod.json`, and SVG icons for the optional Files companion. It is based on Herdr 0.1.12's Files mod; future versions may need rebuilding from the installed shipped Files implementation.
 - Native `View`/`div` from `gpui-kit`; flex elements, InputState/Input, TextView, EditorState/Editor from `gpui-base`.
 - `props`, `focused`, `home`, `theme`, `settings`, `readTextFile` and `writeTextFile` from `herdr`. The companion also uses live spaces/panes, folder watching, directory and Git reads through `exec`, and pane/tab commands.
-- No Node or browser APIs at runtime, no network service, no external Markdown parser, and no build step. The optional installation helper uses Python 3 outside the mod runtime.
+- `renderer/render.mjs` runs locally through `exec("node", ...)`, using Marked, Sharp and Mermaid CLI to produce cached PNG previews. The mod uses `fs/promises` to manage temporary JSON requests. No hosted rendering service or build step; the optional installation helper uses Python 3 outside the mod runtime.
 
 ## Install and open
 

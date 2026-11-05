@@ -9,6 +9,29 @@ import sharp from 'sharp';
 const run = promisify(execFile);
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_REMOTE_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function imagePath(source, file, imageFile, remote = false) {
+  if (imageFile) return file;
+  if (/^(https?:\/\/|data:)/i.test(source)) return null;
+  if (source.startsWith('file:')) return fileURLToPath(source, remote ? { windows: false } : undefined);
+  const paths = remote ? path.posix : path;
+  return paths.resolve(paths.dirname(file), decodeURIComponent(source));
+}
+
+// Plan remote reads locally with the same Markdown parser used for rendering.
+export function remoteImagePaths({ text, file, imageFile = false }) {
+  if (imageFile) return [file];
+  const paths = new Set();
+  marked.walkTokens(marked.lexer(text), token => {
+    if (token.type !== 'image') return;
+    try {
+      const resolved = imagePath(token.href, file, false, true);
+      if (resolved) paths.add(resolved);
+    } catch {} // Invalid URLs are reported alongside the image during rendering.
+  });
+  return [...paths];
+}
 
 async function cleanupCache(cache) {
   const cutoff = Date.now() - CACHE_TTL_MS;
@@ -24,7 +47,7 @@ async function cleanupCache(cache) {
   }
 }
 
-export async function render({ text, file, root, dark = false, imageFile = false }) {
+export async function render({ text, file, root, dark = false, imageFile = false, remoteImages }) {
   const cache = path.join(root, 'data/md-viewer/media');
   await mkdir(cache, { recursive: true });
   const blocks = [];
@@ -48,17 +71,23 @@ export async function render({ text, file, root, dark = false, imageFile = false
         }
         // Keep the source with a reused diagram, using mtime as last-used time.
         try { await utimes(path.join(cache, key + '.mmd'), new Date(), new Date()); } catch {}
-      } else if (/^https?:\/\//i.test(source)) {
+      } else if (!imageFile && /^https?:\/\//i.test(source)) {
         const response = await fetch(source, { signal: AbortSignal.timeout(10000) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         bytes = Buffer.from(await response.arrayBuffer());
-      } else if (source.startsWith('data:')) {
+      } else if (!imageFile && source.startsWith('data:')) {
         const match = /^data:image\/[^;,]+(;base64)?,([\s\S]*)$/.exec(source);
         if (!match) throw new Error('Unsupported data URL');
         bytes = match[1] ? Buffer.from(match[2], 'base64') : Buffer.from(decodeURIComponent(match[2]));
       } else {
-        const local = imageFile ? file : source.startsWith('file:') ? fileURLToPath(source) : path.resolve(path.dirname(file), decodeURIComponent(source));
-        bytes = await readFile(local);
+        const resolved = imagePath(source, file, imageFile, remoteImages !== undefined);
+        if (remoteImages !== undefined) {
+          const entry = remoteImages[resolved];
+          if (!entry) throw new Error('Remote image was not fetched');
+          if (entry.error) throw new Error(entry.error);
+          bytes = Buffer.from(entry.base64, 'base64');
+          if (bytes.length > MAX_REMOTE_IMAGE_BYTES) throw new Error('Remote image exceeds the 5 MiB preview limit');
+        } else bytes = await readFile(resolved);
       }
       const png = await sharp(bytes, { limitInputPixels: 40000000 }).rotate().resize({ width: diagram ? 3200 : 1600, height: diagram ? 4800 : 2400, fit: 'inside', withoutEnlargement: true }).png().toBuffer({ resolveWithObject: true });
       const name = createHash('sha256').update(png.data).digest('hex') + '.png';
@@ -93,6 +122,9 @@ export async function render({ text, file, root, dark = false, imageFile = false
   return blocks;
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  try { console.log(JSON.stringify(await render(JSON.parse(await readFile(process.argv[2], 'utf8'))))); }
+  try {
+    const request = JSON.parse(await readFile(process.argv[2], 'utf8'));
+    console.log(JSON.stringify(request.listImages ? remoteImagePaths(request) : await render(request)));
+  }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }

@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, mkdir, utimes, readdir } from 'node:fs/promises
 import os from 'node:os';
 import path from 'node:path';
 import sharp from '../renderer/node_modules/sharp/lib/index.js';
-import { render } from '../renderer/render.mjs';
+import { render, remoteImagePaths } from '../renderer/render.mjs';
 
 test('relative and reference images render; code examples stay literal; missing images report errors', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'md-viewer-'));
@@ -75,5 +75,30 @@ test('standalone image files render with dimensions, orientation and readable fa
     assert.equal(blocks[0].height, 80);
     const failed = await render({ root, file: path.join(root, 'missing.png'), imageFile: true });
     assert.equal(failed[0].type, 'error');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('SSH image planning resolves POSIX paths, references and file URLs without reading code examples', () => {
+  const request = { file: '/srv/docs/test.md', text: '![one](../test%20image.png)\n\n![two][pic]\n\n[pic]: ../test%20image.png\n\n![absolute](/tmp/図.png)\n\n![file](file:///srv/image%20one.png)\n\n![web](https://example.com/image.png)\n\n![inline](data:image/png;base64,AAAA)\n\n`![code](inline.png)`\n\n```md\n![code](fenced.png)\n```' };
+  assert.deepEqual(remoteImagePaths(request), ['/srv/test image.png', '/tmp/図.png', '/srv/image one.png']);
+  assert.deepEqual(remoteImagePaths({ file: '/srv/100% #1.png', imageFile: true }), ['/srv/100% #1.png']);
+});
+
+test('SSH images use fetched bytes, preserve individual failures, and never fall back to local files', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'remote-render-'));
+  try {
+    const file = path.join(root, 'test.md');
+    const local = path.join(root, 'local.png');
+    const base64 = (await sharp({ create: { width: 12, height: 6, channels: 3, background: '#336699' } }).png().toBuffer()).toString('base64');
+    await writeFile(local, Buffer.from(base64, 'base64'));
+    const blocks = await render({ root, file, text: '![remote](remote.png)\n\n![denied](denied.png)\n\n![local](local.png)\n\n![invalid](bad%ZZ.png)', remoteImages: {
+      [path.join(root, 'remote.png')]: { base64 },
+      [path.join(root, 'denied.png')]: { error: 'Permission denied' }
+    } });
+    assert.equal(blocks[0].type, 'image');
+    assert.equal(blocks[0].width, 12);
+    assert.equal(blocks.filter(b => b.type === 'error').length, 3);
+    assert.ok(blocks.some(b => b.text?.includes('Permission denied')));
+    assert.ok(blocks.some(b => b.text?.includes('not fetched')));
   } finally { await rm(root, { recursive: true, force: true }); }
 });

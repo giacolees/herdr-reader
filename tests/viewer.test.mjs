@@ -1,11 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, unlink, rm, readdir } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const source = readFileSync(new URL('../mods/reader/main.js', import.meta.url), 'utf8')
   .replace(/^import .*;\n/gm, '').replace('export default class', 'return class');
 
-function setup(options = { file: '/tmp/test.md' }, storage = new Map()) {
+function setup(options = { file: '/tmp/test.md' }, storage = new Map(), media = {}) {
   const files = new Map([[options.file, '# Original']]);
   const pending = [];
   const cx = { notify() {}, timer: { every() {} }, spawn(fn) { pending.push(fn(this)); } };
@@ -17,13 +23,14 @@ function setup(options = { file: '/tmp/test.md' }, storage = new Map()) {
   } };
   const localStorage = { getItem: k => storage.get(k), setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) };
   const Viewer = new Function('View', 'focused', 'home', 'props', 'readTextFile',
-    'writeTextFile', 'InputState', 'EditorState', 'settings', 'localStorage', source)(
+    'writeTextFile', 'InputState', 'EditorState', 'settings', 'localStorage',
+    'exec', 'appHome', 'mkdir', 'writeFile', 'unlink', source)(
     class {}, () => ({ cwd: '/tmp' }), () => '/home/test', () => options,
     async path => files.get(path) ?? null,
     async (path, text, expected) => {
       if (files.get(path) !== expected) throw new Error('File changed externally');
       files.set(path, text);
-    }, state, state, () => ({}), localStorage);
+    }, state, state, () => ({}), localStorage, media.exec, media.appHome, mkdir, writeFile, unlink);
   const view = new Viewer();
   view.init({}, cx);
   const settle = async () => { while (pending.length) await Promise.all(pending.splice(0)); };
@@ -93,4 +100,78 @@ test('opening an image cannot discard a dirty Markdown draft', async () => {
   assert.equal(view.file, '/tmp/test.md');
   assert.equal(view.text, '# Draft');
   assert.match(view.error, /Save or discard/);
+});
+
+const run = promisify(execFile);
+const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=', 'base64');
+
+async function remoteSetup(t, { markdown = false, fail = false } = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'reader-ssh-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, markdown ? 'test.md' : 'image \'$1 #100%.png');
+  if (!markdown) await writeFile(file, pixel);
+  const calls = [];
+  const media = { appHome: () => root, async exec(command, args, options) {
+    calls.push({ command, args, options });
+    if (command === 'sh' && fail) throw new Error('SSH connection lost');
+    const argv = command === 'node' ? [fileURLToPath(new URL('../renderer/render.mjs', import.meta.url)), args[1]] : args;
+    try { return { code: 0, ...await run(command, argv, { maxBuffer: 8 * 1024 * 1024 }) }; }
+    catch (e) { return { code: e.code, stdout: e.stdout, stderr: e.stderr }; }
+  } };
+  return { ...setup({ file, on: 'server' }, new Map(), media), root, calls };
+}
+
+test('SSH image preview transfers binary safely, renders locally, and refreshes', async t => {
+  const { view, cx, settle, calls, root } = await remoteSetup(t);
+  view.prepareMedia(cx); await settle();
+  assert.equal(view.mediaError, '');
+  assert.equal(view.media[0].type, 'image');
+  assert.equal(view.media[0].width, 1);
+  const remote = calls.find(c => c.command === 'sh');
+  assert.deepEqual(remote.options, { on: 'server' });
+  assert.equal(remote.args.at(-1), view.file);
+  assert.ok(calls.filter(c => c.command === 'node').every(c => c.options === undefined));
+  assert.deepEqual(await readdir(path.join(root, 'data/md-viewer')), ['media']);
+  await unlink(view.file);
+  view.mediaKey = ''; view.reload(cx); view.prepareMedia(cx); await settle();
+  assert.equal(view.media[0].type, 'error');
+  assert.match(view.media[0].text, /not a regular file/);
+});
+
+test('SSH Markdown resolves and deduplicates images while preserving text and errors', async t => {
+  const { view, cx, files, settle, calls, root } = await remoteSetup(t, { markdown: true });
+  await settle();
+  await writeFile(path.join(root, 'test image.png'), pixel);
+  files.set(view.file, '# Remote\n\n![one](test%20image.png)\n\n![two](test%20image.png)\n\n![missing](missing.png)');
+  view.reload(cx); await settle();
+  view.prepareMedia(cx); await settle();
+  assert.equal(view.media.filter(b => b.type === 'image').length, 2);
+  assert.equal(calls.filter(c => c.command === 'sh').length, 2);
+  assert.ok(view.media.some(b => b.type === 'markdown' && b.text.includes('# Remote')));
+  assert.ok(view.media.some(b => b.type === 'error' && b.text.includes('missing')));
+  assert.equal(view.dirty(), false);
+});
+
+test('SSH failures are shown as image errors and leave no request files', async t => {
+  const { view, cx, settle, root } = await remoteSetup(t, { fail: true });
+  view.prepareMedia(cx); await settle();
+  assert.match(view.media[0].text, /SSH connection lost/);
+  assert.equal(view.mediaBusy, false);
+  assert.deepEqual(await readdir(path.join(root, 'data/md-viewer')), ['media']);
+});
+
+test('opening another file cancels a stale remote preview and removes its request', async t => {
+  const { view, cx, settle, root } = await remoteSetup(t);
+  view.prepareMedia(cx);
+  view.open(path.join(root, 'next.png'), cx);
+  await settle();
+  assert.equal(view.media, null);
+  assert.deepEqual(await readdir(path.join(root, 'data/md-viewer')), []);
+});
+
+test('oversized SSH images report the transfer limit', async t => {
+  const { view, cx, settle } = await remoteSetup(t);
+  await writeFile(view.file, Buffer.alloc(5 * 1024 * 1024 + 1));
+  view.prepareMedia(cx); await settle();
+  assert.match(view.media[0].text, /5 MiB preview limit/);
 });

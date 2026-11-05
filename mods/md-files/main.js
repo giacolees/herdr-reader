@@ -1,7 +1,8 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, Input, InputState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, appHome } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, appHome, pickFolder } from "herdr";
+import { mkdir, writeFile, unlink } from "fs/promises";
 
 import Reader from "./reader.js";
 
@@ -77,6 +78,7 @@ export default class Files extends View {
       this.renameTarget = null; this.renameBusy = false; this.renameError = "";
       this.dragFile = null; this.dragTarget = null; this.dragActive = false; this.moveBusy = false; this.moveError = ""; this.moveMessage = ""; this.browserError = ""; this.revealError = "";
       this.importBusy = false; this.importMessage = ""; this.importError = "";
+      this.downloadBusy = false; this.downloadMessage = ""; this.downloadError = "";
       this.menu = null; this.deleteTarget = null; this.deleteError = ""; this.deleteBusy = false;
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
       this.selectedFolder = saved?.selectedFolder || "";
@@ -334,6 +336,67 @@ export default class Files extends View {
     cx.notify();
   }
 
+  copyPath(cx) {
+    if (!this.menu || !this.root) return;
+    cx.write_to_clipboard(`${this.root}/${this.menu.path}`);
+    this.menu = null;
+    cx.notify();
+  }
+
+  canDownload(item = this.menu) {
+    return Boolean(item && !item.dir && this.on && !this.downloadBusy);
+  }
+
+  downloadFile(cx) {
+    if (!this.canDownload()) return;
+    const context = this.context, path = `${this.root}/${this.menu.path}`;
+    const name = this.menu.path.split("/").pop();
+    this.menu = null; this.downloadBusy = true; this.downloadError = ""; this.downloadMessage = "";
+    cx.spawn(async cx => {
+      const requestFile = appHome() + "/data/md-viewer/download-" + Date.now() + "-" + String(Math.random()).slice(2) + ".json";
+      let job = null;
+      const local = async request => {
+        await writeFile(requestFile, JSON.stringify(request));
+        const result = await exec("node", [appHome() + "/mods/reader/renderer/download.mjs", requestFile]);
+        if (result.code !== 0) throw new Error(result.stderr || "Could not save the download");
+        return JSON.parse(result.stdout);
+      };
+      try {
+        const folder = await pickFolder({ prompt: "Download “" + name + "” to folder" });
+        if (!folder || !this.current(context)) return;
+        this.downloadMessage = "Downloading “" + name + "”…"; cx.notify();
+        const info = await exec("sh", ["-c", 'test -f "$1" || { echo "Only regular files can be downloaded" >&2; exit 1; }; wc -c < "$1"', "files-download", path], { on: context.on });
+        if (info.code !== 0) throw new Error(info.stderr || "Could not read the remote file");
+        const size = Number(info.stdout.trim()), chunkSize = 1024 * 1024;
+        if (!/^\d+$/.test(info.stdout.trim()) || !Number.isSafeInteger(size)) throw new Error("Invalid remote file size");
+        await mkdir(appHome() + "/data/md-viewer", { recursive: true });
+        job = await local({ action: "start", folder, name });
+        for (let offset = 0; offset < size; offset += chunkSize) {
+          if (!this.current(context)) throw new Error("Download cancelled after changing folders");
+          const result = await exec("sh", ["-c", 'dd if="$1" bs=1048576 skip="$2" count=1 2>/dev/null | base64', "files-download", path, String(offset / chunkSize)], { on: context.on });
+          if (result.code !== 0) throw new Error(result.stderr || "Could not download the remote file");
+          const base64 = result.stdout.replace(/\s/g, "");
+          const bytes = base64.length / 4 * 3 - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+          if (base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || bytes !== Math.min(chunkSize, size - offset)) throw new Error("Incomplete download; the remote file may have changed");
+          await local({ action: "append", ...job, base64 });
+          if (this.current(context)) { this.downloadMessage = "Downloading “" + name + "”… " + Math.round((offset + bytes) / size * 100) + "%"; cx.notify(); }
+        }
+        if (!this.current(context)) throw new Error("Download cancelled after changing folders");
+        await local({ action: "finish", ...job });
+        if (this.current(context)) this.downloadMessage = "Downloaded to " + job.destination;
+        job = null;
+      } catch (error) {
+        if (this.current(context)) { this.downloadMessage = ""; this.downloadError = "Download failed. " + String(error.message || error).slice(0, 300); }
+      } finally {
+        if (job) { try { await local({ action: "abort", ...job }); } catch {} }
+        try { await unlink(requestFile); } catch {}
+        if (this.context === context) this.downloadBusy = false;
+        cx.notify();
+      }
+    });
+    cx.notify();
+  }
+
   canRevealInFinder() {
     return Boolean(this.menu && !this.on && window()?.platform === "macos");
   }
@@ -499,7 +562,7 @@ export default class Files extends View {
       .on_mouse_down_out((_event, cx) => this.cancelFileDrag(cx))
       .when(this.dragActive, el => el.cursor_grabbing())
       .on_size_change((size, _cx) => { this.panelHeight = size.height; this.panelWidth = size.width; })
-      .on_mouse_down("right", (event, cx) => { if (this.menu) { this.menuX = Math.max(4, Math.min((event.local_position?.x ?? 10) + 4, (this.panelWidth || 368) - 184)); this.menuY = Math.max(4, Math.min((event.local_position?.y ?? 42) + 4, (this.panelHeight || 600) - (112 + (this.canOpenInBrowser() ? 32 : 0) + (this.canRevealInFinder() ? 32 : 0)))); cx.notify(); } })
+      .on_mouse_down("right", (event, cx) => { if (this.menu) { this.menuX = Math.max(4, Math.min((event.local_position?.x ?? 10) + 4, (this.panelWidth || 368) - 184)); this.menuY = Math.max(4, Math.min((event.local_position?.y ?? 42) + 4, (this.panelHeight || 600) - (144 + (this.canDownload() ? 32 : 0) + (this.canOpenInBrowser() ? 32 : 0) + (this.canRevealInFinder() ? 32 : 0)))); cx.notify(); } })
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .when(Boolean(this.file), el => el.child(div().id("files-back").px(6).py(4).rounded(5).hover(s => s.bg(t.hover)).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("← Files")))
         .when(!this.file, el => el.child(div().font_semibold().child("Files")))
@@ -518,6 +581,7 @@ export default class Files extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(this.root.split(/[\\/]/).pop()))))
       .when(Boolean(this.revealError), el => el.child(div().px(12).py(8).text_size(12).text_color(t.blocked).child(this.revealError)))
       .when(Boolean(this.browserError), el => el.child(div().px(12).py(8).text_size(12).text_color(t.blocked).child(this.browserError)))
+      .when(Boolean(this.downloadBusy || this.downloadMessage || this.downloadError), el => el.child(div().px(12).py(8).text_size(12).text_color(this.downloadError ? t.blocked : t.muted).child(this.downloadError || this.downloadMessage || "Choose a download folder…")))
       .when(Boolean(this.moveBusy || this.moveError || this.moveMessage), el => el.child(div().px(12).py(8).text_size(12).text_color(this.moveError ? t.blocked : t.muted).child(this.moveBusy ? "Moving file…" : this.moveError || this.moveMessage)))
       .when(Boolean(this.importBusy || this.importMessage || this.importError), el => el.child(v_flex().px(12).py(8).gap(4)
         .when(this.importBusy, el => el.child(div().text_size(12).text_color(t.muted).child("Copying dropped files…")))
@@ -562,6 +626,8 @@ export default class Files extends View {
       .when(!this.file && Boolean(this.menu), el => el.child(v_flex().id("file-context-menu").absolute().left(this.menuX ?? 10).top(this.menuY ?? 42).w(Math.min(180, Math.max(1, (this.panelWidth || 368) - 8))).p(5).gap(3).rounded(6).bg(t.popover).border_1().border_color(t.border)
         .on_mouse_down_out((_e, cx) => { this.menu = null; cx.notify(); })
         .child(div().px(7).py(4).text_size(11).text_color(t.muted).truncate().child(this.menu.path.split("/").pop()))
+        .child(action("copy-path", "Copy path", (_e, cx) => { cx.stop_propagation(); this.copyPath(cx); }))
+        .when(this.canDownload(), el => el.child(action("download-file", "Download…", (_e, cx) => { cx.stop_propagation(); this.downloadFile(cx); })))
         .when(this.canOpenInBrowser(), el => el.child(action("open-in-browser", "Open in browser", (_e, cx) => { cx.stop_propagation(); this.openInBrowser(cx); })))
         .when(this.canRevealInFinder(), el => el.child(action("reveal-in-finder", "Reveal in Finder", (_e, cx) => { cx.stop_propagation(); this.revealInFinder(cx); })))
         .child(action("rename-menu-item", "Rename…", (_e, cx) => { cx.stop_propagation(); this.requestRename(cx); }))

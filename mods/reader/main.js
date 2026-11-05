@@ -160,23 +160,39 @@ export default class Reader extends View {
 
   prepareMedia(cx) {
     if (this.text === null || this.mode === "edit") return;
-    const key = JSON.stringify([this.file, this.text, settings().dark]);
+    const key = JSON.stringify([this.machine, this.file, this.text, settings().dark]);
     if (key === this.mediaKey) return;
     this.mediaKey = key;
     this.media = null;
     this.mediaError = "";
     const generation = ++this.mediaGeneration;
-    if (this.machine) {
-      this.mediaError = "Image and diagram previews are currently available for local documents only.";
-      this.mediaBusy = false;
-      return;
-    }
     this.mediaBusy = true;
+    const machine = this.machine;
     const request = { text: this.text, file: this.file, root: appHome(), dark: settings().dark, imageFile: Boolean(this.isImage) };
     cx.spawn(async (cx) => {
       const requestFile = appHome() + "/data/md-viewer/request-" + this.requestId + "-" + generation + ".json";
       try {
         await mkdir(appHome() + "/data/md-viewer", { recursive: true });
+        if (machine) {
+          await writeFile(requestFile, JSON.stringify({ ...request, listImages: true }));
+          const plan = await exec("node", [appHome() + "/mods/reader/renderer/render.mjs", requestFile]);
+          if (plan.code !== 0) throw new Error(plan.stderr || "Could not resolve remote images");
+          request.remoteImages = {};
+          for (const path of JSON.parse(plan.stdout)) {
+            if (generation !== this.mediaGeneration) break;
+            try {
+              // exec returns UTF-8, so transfer binary bytes as base64. Stay below
+              // its 8 MiB output limit and pass paths as arguments, never shell code.
+              const script = 'test -f "$1" || { echo "Remote image is not a regular file" >&2; exit 1; }; size=$(wc -c < "$1") || exit 1; [ "$size" -le 5242880 ] || { echo "Remote image exceeds the 5 MiB preview limit" >&2; exit 1; }; head -c 5242881 < "$1" | base64';
+              const result = await exec("sh", ["-c", script, "reader-image", path], { on: machine });
+              if (result.code !== 0) throw new Error(result.stderr || "Could not read remote image");
+              request.remoteImages[path] = { base64: result.stdout };
+            } catch (e) {
+              request.remoteImages[path] = { error: String(e?.message || e).slice(0, 300) };
+            }
+          }
+        }
+        if (generation !== this.mediaGeneration) return;
         await writeFile(requestFile, JSON.stringify(request));
         const result = await exec("node", [appHome() + "/mods/reader/renderer/render.mjs", requestFile]);
         if (result.code !== 0) throw new Error(result.stderr || "Renderer failed");
@@ -184,8 +200,9 @@ export default class Reader extends View {
         if (generation === this.mediaGeneration) this.media = blocks;
       } catch (e) {
         if (generation === this.mediaGeneration) this.mediaError = "Media preview failed. Run scripts/install.sh to install the renderer. " + String(e?.message || e).slice(0, 250);
+      } finally {
+        try { await unlink(requestFile); } catch {}
       }
-      try { await unlink(requestFile); } catch {}
       if (generation === this.mediaGeneration) { this.mediaBusy = false; cx.notify(); }
     });
   }
